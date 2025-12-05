@@ -240,12 +240,14 @@ pub trait FileWriter {
     fn write_block(&mut self, data: &[u8]) -> Result<(), String>;
 }
 
+#[cfg(feature = "filesystem")]
 pub struct FileSystem {
     /// sets the gid uid in the tar file, false will just use the current user
     pub use_metadata: bool,
     start_folder: cap_std::fs::Dir,
 }
 
+#[cfg(feature = "filesystem")]
 impl std::default::Default for FileSystem {
     fn default() -> Self {
         Self {
@@ -256,6 +258,7 @@ impl std::default::Default for FileSystem {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl FileSystem {
     pub fn new<P: AsRef<Path>>(starting_dir: P) -> Self {
         FileSystem {
@@ -269,6 +272,7 @@ impl FileSystem {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl FileSystemImpl for FileSystem {
     type Writer = FileWrapper;
 
@@ -310,11 +314,13 @@ impl FileSystemImpl for FileSystem {
     }
 }
 
+#[cfg(feature = "filesystem")]
 pub enum FileWrapper {
     File(cap_std::fs::File),
     Dir,
 }
 
+#[cfg(feature = "filesystem")]
 impl FileWriter for FileWrapper {
     fn write_block(&mut self, data: &[u8]) -> Result<(), String> {
         match self {
@@ -497,6 +503,7 @@ fn list_file_test() {
     );
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn unpack_tar_into_temp_folder_test() {
     // copied from the rust docs
@@ -518,7 +525,7 @@ fn unpack_tar_into_temp_folder_test() {
     use std::fs::File;
 
     let mut file = File::open("test/support/archive.tar").unwrap();
-    let tmp_dir = tempdir::TempDir::new("unpack_tar_into_temp_folder_test").unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
 
     let tmp_dir_path = tmp_dir.path();
     let fs = FileSystem::new(tmp_dir_path);

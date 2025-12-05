@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cap-std = "3.4.5"
+cap-std = {version = "3.4.5", optional = true}
 deku = "0.20.2"
 
 [dev-dependencies]
-tempdir = "0.3.7"
+tempfile = "3.23.0"
+
+[features]
+default = ["filesystem"]
+filesystem = ["cap-std"]
