@@ -1,10 +1,4 @@
-use std::{
-    ffi::OsString,
-    io::Write,
-    num::ParseIntError,
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{io::Write, num::ParseIntError, path::Path, sync::Mutex};
 
 use deku::prelude::*;
 
@@ -27,26 +21,28 @@ use deku::prelude::*;
 //   char prefix[155];             /* 345 */
 // };
 
+/// struct that contains the binary data from a tar header
+/// see [TarHeaderCastedFields] for the converted types
 #[derive(Debug, PartialEq, DekuRead, DekuWrite, DekuSize, Clone)]
 #[deku(endian = "big")]
 pub struct TarHeader {
-    name: [u8; 100],
-    mode: u64,
-    uid: u64,
-    gid: u64,
-    size: [u8; 12],
-    mtime: [u8; 12],
-    chksum: u64,
-    typeflag: u8,
-    linkname: [u8; 100],
-    magic: [u8; 6],
-    version: [u8; 2],
-    uname: [u8; 32],
-    gname: [u8; 32],
-    devmajor: u64,
-    devminor: u64,
+    pub name: [u8; 100],
+    pub mode: u64,
+    pub uid: u64,
+    pub gid: u64,
+    pub size: [u8; 12],
+    pub mtime: [u8; 12],
+    pub chksum: u64,
+    pub typeflag: u8,
+    pub linkname: [u8; 100],
+    pub magic: [u8; 6],
+    pub version: [u8; 2],
+    pub uname: [u8; 32],
+    pub gname: [u8; 32],
+    pub devmajor: u64,
+    pub devminor: u64,
     #[deku(pad_bytes_after = "12")]
-    prefix: [u8; 155],
+    pub prefix: [u8; 155],
 }
 
 /// Tar bytes are `cstr`/`&[u8]` this struct contains the rust types
@@ -113,6 +109,7 @@ impl TarHeader {
         Ok(flag)
     }
 
+    /// tar header fields converted to rust types, also implements the validation of the headers.
     pub fn casted_fields(&self) -> Result<TarHeaderCastedFields<'_>, String> {
         Ok(TarHeaderCastedFields {
             name: self.name()?,
@@ -123,6 +120,7 @@ impl TarHeader {
         })
     }
 
+    /// check the magic field in the header
     pub fn validate_magic(&self) -> Result<(), String> {
         // gnu docs say it should be null character but it is a space?
         if ![b"ustar ", b"ustar\0"].contains(&&self.magic) {
@@ -205,13 +203,13 @@ pub fn parse_tar(reader: &mut dyn std::io::Read, fs: &impl FileSystemImpl) -> Re
                     count_zeroes += 1;
                 } else {
                     if count_zeroes != 0 {
-                        dbg!(count_zeroes);
+                        // dbg!(count_zeroes);
                     }
                     count_zeroes = 0;
                 }
             }
             file.write_block(&block[..current_blocksize])?;
-            dbg!(count_zeroes);
+            // dbg!(count_zeroes);
         }
 
         fs.save(file).unwrap();
@@ -226,6 +224,10 @@ enum ParseTarResult<T> {
     Err(ParseTarError),
 }
 
+/// Trait that is used the write the tar contents to:
+/// - Real implementation is [FileSystem]
+/// - In memory implementation [MemoryFileSystem]
+/// - To just scan the tar headers [NullFileSystem]
 pub trait FileSystemImpl {
     type Writer: FileWriter;
     fn open<'a>(
@@ -236,11 +238,14 @@ pub trait FileSystemImpl {
     fn save(&self, writer: Self::Writer) -> Result<(), String>;
 }
 
+/// Trait for writing contents into a 'file' (this can also be in memory)
 pub trait FileWriter {
+    /// callback for each block of content for this file
     fn write_block(&mut self, data: &[u8]) -> Result<(), String>;
 }
 
 #[cfg(feature = "filesystem")]
+/// Implementation that uses the filesystem to write the contents of the tar to. Uses [cap_std] for creating dir and files.
 pub struct FileSystem {
     /// sets the gid uid in the tar file, false will just use the current user
     pub use_metadata: bool,
@@ -278,7 +283,7 @@ impl FileSystemImpl for FileSystem {
 
     fn open<'a>(
         &self,
-        tar_header: &'a TarHeader,
+        _tar_header: &'a TarHeader,
         casted_fields: &'a TarHeaderCastedFields,
     ) -> Result<Self::Writer, String> {
         if self.use_metadata {
@@ -299,10 +304,6 @@ impl FileSystemImpl for FileSystem {
                     "unable to create file with type other than file or dir",
                 )),
             }
-            // let dir = cap_std::fs::Dir::open_ambient_dir(&self.start_folder, self.ambient_authority);
-            // let path = self.start_folder.join(casted_fields.name);
-            // we probably need to make this safe, if name has .. or absolute path, it goes there.
-            // std::fs::File::create(path).map_err(|e| e.to_string())
         }
     }
 
@@ -330,24 +331,46 @@ impl FileWriter for FileWrapper {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemoryFile {
     pub name: String,
     pub meta: TarHeader,
     pub data: Vec<u8>,
+    remaining: Option<usize>,
 }
 
 impl FileWriter for MemoryFile {
     fn write_block(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.remaining = self.remaining.map(|x| x.saturating_sub(bytes.len()));
+        if self.remaining.is_some_and(|x| x == 0) {
+            return Err(String::from("tar memory buffer is full"));
+        }
+
         self.data.extend_from_slice(bytes);
 
         Ok(())
     }
 }
 
+/// Implementation that keeps everything in memory
+///
+/// Optionally set the max size the file contents can take up in bytes.
 #[derive(Debug, Default)]
 pub struct MemoryFileSystem {
     pub state: Mutex<Vec<MemoryFile>>,
+    remaining: Mutex<Option<usize>>,
+}
+
+impl MemoryFileSystem {
+    /// Creates new [MemoryFileSystem]
+    ///
+    /// if you don't set the max_size you can use [MemoryFileSystem::default]
+    pub fn new(max_size: Option<usize>) -> Self {
+        MemoryFileSystem {
+            state: Mutex::new(Vec::new()),
+            remaining: Mutex::new(max_size),
+        }
+    }
 }
 
 impl FileSystemImpl for MemoryFileSystem {
@@ -357,14 +380,24 @@ impl FileSystemImpl for MemoryFileSystem {
         tar: &TarHeader,
         casted_fields: &TarHeaderCastedFields,
     ) -> Result<Self::Writer, String> {
+        let remaining = {
+            let lock = self.remaining.lock().unwrap();
+            lock.clone()
+        };
+
         Ok(MemoryFile {
             name: casted_fields.name.to_string(),
             meta: tar.clone(),
             data: Vec::new(),
+            remaining,
         })
     }
 
     fn save(&self, writer: Self::Writer) -> Result<(), String> {
+        {
+            let mut remaining_lock = self.remaining.lock().expect("unable to acquire lock");
+            *remaining_lock = writer.remaining;
+        }
         let mut lock = self.state.lock().expect("unable to acquire lock");
 
         lock.push(writer);
@@ -373,7 +406,7 @@ impl FileSystemImpl for MemoryFileSystem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NullFile {
     pub tar: TarHeader,
 }
@@ -384,7 +417,7 @@ impl<'a> FileWriter for NullFile {
     }
 }
 
-/// FileSystem that doesnt not store the contents of the file
+/// FileSystem that doesn't not store the contents of the file
 #[derive(Debug, Default)]
 pub struct NullFileSystem {
     pub state: Mutex<Vec<NullFile>>,
@@ -501,6 +534,57 @@ fn list_file_test() {
             String::from("./archive/small.txt"),
         ]
     );
+}
+
+#[test]
+fn unpack_tar_into_memory_fs() {
+    use std::fs::File;
+
+    let fs = MemoryFileSystem::default();
+    let mut file = File::open("test/support/archive.tar").unwrap();
+
+    parse_tar(&mut file, &fs).unwrap();
+
+    let lock = fs.state.lock().unwrap();
+    assert_eq!(lock.len(), 5);
+    let file_names: Vec<_> = lock.iter().map(|x| x.name.to_string()).collect();
+    assert_eq!(
+        file_names,
+        vec![
+            String::from("./archive/"),
+            String::from("./archive/lorem.txt"),
+            String::from("./archive/nested/"),
+            String::from("./archive/nested/data.txt"),
+            String::from("./archive/small.txt"),
+        ]
+    );
+    let file_contents: Vec<_> = lock.iter().map(|x| x.data.to_vec()).collect();
+
+    assert!(String::from_utf8_lossy(&file_contents[1]).contains("END OF STRING"));
+}
+
+#[test]
+fn unpack_tar_into_memory_fs_too_large() {
+    use std::fs::File;
+
+    let fs = MemoryFileSystem::new(Some(5250));
+    let mut file = File::open("test/support/archive.tar").unwrap();
+
+    let error_msg = parse_tar(&mut file, &fs).unwrap_err();
+
+    assert_eq!(error_msg, String::from("tar memory buffer is full"));
+
+    let data_cloned: Vec<_> = {
+        let lock = fs.state.lock().unwrap();
+        lock.iter().cloned().collect()
+    };
+
+    let remainders = data_cloned.iter().map(|x| x.remaining).collect::<Vec<_>>();
+
+    assert_eq!(remainders[0].unwrap(), 5250);
+    assert_eq!(remainders[1].unwrap(), 25);
+    assert_eq!(remainders[2].unwrap(), 25);
+    assert_eq!(remainders[3].unwrap(), 2);
 }
 
 #[cfg(feature = "filesystem")]
